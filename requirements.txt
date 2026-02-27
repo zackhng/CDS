@@ -7,3 +7,7 @@ torchvision>=0.25.0
 opencv-python>=4.13.0.92
 moviepy>=2.2.1
 torchaudio>=2.10.0
+scikit-learn>=1.7.2
+transformers>=5.2.0
+datasets>=4.6.0
+accelerate>=1.12.0
