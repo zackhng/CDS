@@ -1,5 +1,19 @@
-/venv
-/raw_data
+# Virtual environment
+/venv/
+
+# Data files
+/raw_data/
+
+# Python cache
 **/__pycache__/
-/text_checkpoint
+*.py[cod]
+
+# Jupyter Notebook checkpoints
+**/.ipynb_checkpoints/
+text_checkpoint/
+
+# PyTorch model files
 **.pth
+
+# macOS system files
+.DS_Store
