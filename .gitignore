@@ -17,3 +17,13 @@ text_checkpoint/
 
 # macOS system files
 .DS_Store
+
+# images
+*.png
+
+# json files
+*.json 
+
+# model files
+*.safetensors
+*.pt
