@@ -296,4 +296,11 @@ CDS/
 ```
 
 ---
+## Image data and model
+**Drive Link:** [https://drive.google.com/drive/folders/1ZZShcFJN5swe6Q7ERMvSzKgYZ445dMhB?usp=drive_link]
 
+## ⚡ Quick Setup
+
+1. Download the data from the Drive link above
+2. Place it in your project root (make sure to check the paths are correct):
+3. Load files in your code so image_dinoV2 notebook cells can run
