@@ -3,6 +3,7 @@
 
 # Data files
 /raw_data/
+/data/
 
 # Python cache
 **/__pycache__/
@@ -14,6 +15,10 @@ text_checkpoint/
 
 # PyTorch model files
 **.pth
+**.pt
+
+# NumPy
+**.npy
 
 # macOS system files
 .DS_Store
