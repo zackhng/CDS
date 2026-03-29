@@ -1,6 +1,18 @@
-# CDS
-CDS 50.038
+# CDS 50.038
+## Multimodal Emotion Detection
 
+This project explores **multimodal emotion detection** using **audio, image, and text data** to better understand human emotions. The main objective is to investigate whether combining multiple modalities can improve emotion recognition accuracy compared to using a single modality.
+
+The project focuses on **cross-modal emotion understanding**, especially in situations where emotional signals conflict (e.g., calm speech but sad facial expression or emotionally charged text). By integrating speech features, visual cues, and textual information, the system aims to produce more reliable and robust emotion predictions.
+
+Key goals:
+
+* Build emotion detection models using **audio, image, and text**
+* Compare **unimodal vs multimodal performance**
+* Analyze **conflicting emotional signals across modalities**
+* Evaluate models using **F1-score, accuracy, and confusion matrix**
+
+---
 
 ## Environment Setup
 
