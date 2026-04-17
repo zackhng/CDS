@@ -15,7 +15,7 @@ from transformers import AutoTokenizer
 
 _device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-_model = None
+_text_model = None
 _tokenizer = None
 # ---------------------------------------------------------------------------
 # Emotion label set (matches RAVDESS + general sentiment datasets)
@@ -44,20 +44,120 @@ EMOTION_EMOJIS = {
 
 # ---------------------------------------------------------------------------
 
-def _load_model():
+def _load_text_model():
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
-    global _model, _tokenizer
+    global _text_model, _tokenizer
 
-    if _model is None:
-        model_path = "C:/Desktop/CDS_Proj/models/text_model"
+    if _text_model is None:
+        model_path = "C:/Users/zhaoh/Desktop/CDS/models/text_model"
 
         _tokenizer = AutoTokenizer.from_pretrained(model_path)
-        _model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        _text_model = AutoModelForSequenceClassification.from_pretrained(model_path)
+        _text_model.to(_device)
+        _text_model.eval()
 
-        _model.eval()
+    return _text_model, _tokenizer
 
-    return _model, _tokenizer
+_visual_model = None
 
+def _load_visual_model():
+    global _visual_model
+
+    if _visual_model is None:
+        import torch
+        import torch.nn as nn
+        from transformers import AutoModel
+
+        class DINOv2Classifier(nn.Module):
+            def __init__(
+                self,
+                num_classes: int,
+                backbone: str = "facebook/dinov2-base",
+                freeze_backbone: bool = True
+            ):
+                super().__init__()
+
+                self.backbone = AutoModel.from_pretrained(backbone)
+
+                hidden_size = self.backbone.config.hidden_size
+
+                self.classifier = nn.Sequential(
+                    nn.LayerNorm(hidden_size),
+                    nn.Linear(hidden_size, num_classes)
+                )
+
+                if freeze_backbone:
+                    for p in self.backbone.parameters():
+                        p.requires_grad = False
+
+            def forward(self, pixel_values):
+                outputs = self.backbone(pixel_values=pixel_values)
+                cls_token = outputs.last_hidden_state[:, 0]
+                return self.classifier(cls_token)
+
+        # 1. Instantiate model FIRST
+        _visual_model = DINOv2Classifier(
+            num_classes=7,
+            freeze_backbone=True
+        ).to(_device)
+
+        # 2. Load weights (IMPORTANT: state_dict)
+        model_path = "C:/Users/zhaoh/Desktop/CDS/models/image_dino.pt"
+        state_dict = torch.load(model_path, map_location=_device)
+
+        _visual_model.load_state_dict(state_dict)
+
+        # 3. Eval mode
+        _visual_model.eval()
+
+    return _visual_model
+
+_audio_model = None
+
+def _load_audio_model():
+    global _audio_model
+
+    import torch
+    import torch.nn as nn
+    from transformers import Wav2Vec2Model
+
+    device = _device
+    MODEL_NAME = "facebook/wav2vec2-base"
+
+    class Wav2Vec2EmotionClassifier(nn.Module):
+        def __init__(self, num_classes):
+            super().__init__()
+            self.wav2vec2 = Wav2Vec2Model.from_pretrained(MODEL_NAME)
+
+            hidden_size = self.wav2vec2.config.hidden_size
+
+            self.classifier = nn.Sequential(
+                nn.Linear(hidden_size, 256),
+                nn.ReLU(),
+                nn.Dropout(0.3),
+                nn.Linear(256, num_classes)
+            )
+
+        def forward(self, input_values):
+            outputs = self.wav2vec2(input_values)
+            pooled = outputs.last_hidden_state.mean(dim=1)
+            return self.classifier(pooled)
+
+    if _audio_model is None:
+        path = r"C:/Users/zhaoh/Desktop/CDS/models/audio_wave2vec2.pt"
+
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
+
+        model = Wav2Vec2EmotionClassifier(
+            num_classes=checkpoint["num_classes"]
+        ).to(device)
+
+        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+        model.eval()
+
+        _audio_model = model
+
+    return _audio_model
 
 # ---------------------------------------------------------------------------
 # Text Processing
@@ -72,7 +172,7 @@ def clean_text(text: str) -> str:
 
 
 def process_text(raw_text: str) -> dict:
-    model, tokenizer = _load_model()
+    model, tokenizer = _load_text_model()
 
     cleaned_text = clean_text(raw_text)
 
@@ -134,147 +234,150 @@ def _get_text_classifier():
 # Audio Processing
 # ---------------------------------------------------------------------------
 def process_audio(audio_bytes: bytes, filename: str = "audio.wav") -> dict:
-    """
-    Extract features from audio and predict emotion.
+    import torch
+    import tempfile
+    import os
+    import librosa
+    from transformers import Wav2Vec2Processor
 
-    Returns:
-        dict with keys: emotion, confidence, all_scores, features, waveform, sr
-    """
+    model = _load_audio_model()
+
+    # IMPORTANT: MUST match training model
+    processor = Wav2Vec2Processor.from_pretrained("facebook/wav2vec2-base")
+
+    # ---- Save temp file ----
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+        tmp.write(audio_bytes)
+        tmp_path = tmp.name
+
     try:
-        import librosa
-        import librosa.display
-
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp.write(audio_bytes)
-            tmp_path = tmp.name
-
-        y, sr = librosa.load(tmp_path, sr=22050, duration=10.0)
+        # MUST be 16kHz (same as training)
+        y, sr = librosa.load(tmp_path, sr=16000, mono=True)
+    finally:
         os.unlink(tmp_path)
 
-        # Feature extraction
-        mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-        mfcc_mean = mfccs.mean(axis=1)
-        rms = librosa.feature.rms(y=y).mean()
-        zcr = librosa.feature.zero_crossing_rate(y).mean()
-        spec_centroid = librosa.feature.spectral_centroid(y=y, sr=sr).mean()
+    # ---- Correct Wav2Vec2 input ----
+    input_values = processor(
+        y,
+        sampling_rate=16000,
+        return_tensors="pt"
+    ).input_values.to(_device)
 
-        # Aggregate feature vector for mock model input
-        feature_vector = np.concatenate([mfcc_mean, [rms, zcr, spec_centroid]])
-        seed_str = str(feature_vector[:5].round(3).tolist())
-        scores = _mock_softmax(seed_str)
-        emotion = max(scores, key=scores.get)
+    # ---- Inference ----
+    with torch.no_grad():
+        logits = model(input_values)
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
 
-        return {
-            "emotion": emotion,
-            "confidence": scores[emotion],
-            "all_scores": scores,
-            "features": {
-                "mfcc_mean": mfcc_mean.tolist(),
-                "rms": float(rms),
-                "zcr": float(zcr),
-                "spectral_centroid": float(spec_centroid),
-            },
-            "waveform": y,
-            "sr": sr,
-        }
-
-    except ImportError:
-        pass
-    except Exception as e:
-        pass
-
-    # Full fallback
-    scores = _mock_softmax(filename)
+    scores = {EMOTIONS[i]: float(probs[i]) for i in range(len(EMOTIONS))}
     emotion = max(scores, key=scores.get)
+
     return {
         "emotion": emotion,
         "confidence": scores[emotion],
         "all_scores": scores,
-        "features": {},
-        "waveform": None,
-        "sr": None,
+        "waveform": y,
+        "sr": sr
     }
-
 
 # ---------------------------------------------------------------------------
 # Visual Processing
 # ---------------------------------------------------------------------------
-def process_image(image_input, label_hint: str = "") -> dict:
+def process_image(image_input) -> dict:
     """
     Run face detection + emotion classification on image.
 
     Args:
         image_input: PIL Image or np.ndarray
-        label_hint: Optional string seed for mock
 
     Returns:
         dict with keys: emotion, confidence, all_scores, faces_detected, annotated_image
     """
     import numpy as np
+    from PIL import Image as PILImage
+    import cv2
+
+    if hasattr(image_input, "read"):
+        img_pil = PILImage.open(image_input).convert("RGB")
+    elif isinstance(image_input, np.ndarray):
+        img_pil = PILImage.fromarray(image_input)
+    else:
+        img_pil = image_input
+
+    img_cv = np.array(img_pil)
+    img_bgr = img_cv[:, :, ::-1].copy()
+
+    # Try MTCNN face detection
+    faces_detected = 0
+    annotated = img_cv.copy()
     try:
-        from PIL import Image as PILImage
-        import cv2
-
-        if hasattr(image_input, "read"):
-            img_pil = PILImage.open(image_input).convert("RGB")
-        elif isinstance(image_input, np.ndarray):
-            img_pil = PILImage.fromarray(image_input)
-        else:
-            img_pil = image_input
-
-        img_cv = np.array(img_pil)
-        img_bgr = img_cv[:, :, ::-1].copy()
-
-        # Try MTCNN face detection
-        faces_detected = 0
-        annotated = img_cv.copy()
+        from facenet_pytorch import MTCNN
+        detector = MTCNN(keep_all=True, post_process=False)
+        import torch
+        img_tensor = PILImage.fromarray(img_cv)
+        boxes, probs = detector.detect(img_tensor)
+        if boxes is not None:
+            faces_detected = len(boxes)
+            for box in boxes:
+                x1, y1, x2, y2 = [int(b) for b in box]
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 100), 2)
+    except Exception:
+        # Haar cascade fallback
         try:
-            from facenet_pytorch import MTCNN
-            detector = MTCNN(keep_all=True, post_process=False)
-            import torch
-            img_tensor = PILImage.fromarray(img_cv)
-            boxes, probs = detector.detect(img_tensor)
-            if boxes is not None:
-                faces_detected = len(boxes)
-                for box in boxes:
-                    x1, y1, x2, y2 = [int(b) for b in box]
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 100), 2)
+            face_cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            faces_detected = len(faces)
+            for (x, y, w, h) in faces:
+                cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 100), 2)
         except Exception:
-            # Haar cascade fallback
-            try:
-                face_cascade = cv2.CascadeClassifier(
-                    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-                )
-                gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-                faces = face_cascade.detectMultiScale(gray, 1.1, 4)
-                faces_detected = len(faces)
-                for (x, y, w, h) in faces:
-                    cv2.rectangle(annotated, (x, y), (x + w, y + h), (0, 255, 100), 2)
-            except Exception:
-                pass
+            pass
 
-        seed_str = label_hint or str(img_cv[::30, ::30, 0].flatten()[:10].tolist())
-        scores = _mock_softmax(seed_str)
-        emotion = max(scores, key=scores.get)
+    model = _load_visual_model()
 
-        return {
-            "emotion": emotion,
-            "confidence": scores[emotion],
-            "all_scores": scores,
-            "faces_detected": faces_detected,
-            "annotated_image": annotated,
-        }
+    # ---- Preprocess ----
+    face_img = img_cv
 
-    except Exception as e:
-        scores = _mock_softmax(label_hint or "image")
-        emotion = max(scores, key=scores.get)
-        return {
-            "emotion": emotion,
-            "confidence": scores[emotion],
-            "all_scores": scores,
-            "faces_detected": 0,
-            "annotated_image": None,
-        }
+    # If faces detected → crop first face
+    if faces_detected > 0:
+        try:
+            if 'boxes' in locals() and boxes is not None:
+                x1, y1, x2, y2 = [int(b) for b in boxes[0]]
+                face_img = img_cv[y1:y2, x1:x2]
+        except:
+            pass
+
+    import cv2
+    face_img = cv2.resize(face_img, (224, 224))  # ⚠️ CHANGE if your model uses different size
+    face_img = face_img / 255.0
+
+    # HWC → CHW
+    face_img = np.transpose(face_img, (2, 0, 1))
+
+    import torch
+    input_tensor = torch.tensor(face_img, dtype=torch.float32).unsqueeze(0).to(_device)
+
+    # ---- Inference ----
+    with torch.no_grad():
+        logits = model(input_tensor)
+        probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+
+    # ---- Convert to dict ----
+    scores = {
+        EMOTIONS[i]: float(probs[i])
+        for i in range(len(EMOTIONS))
+    }
+
+    emotion = max(scores, key=scores.get)
+
+    return {
+        "emotion": emotion,
+        "confidence": scores[emotion],
+        "all_scores": scores,
+        "faces_detected": faces_detected,
+        "annotated_image": annotated,
+    }
 
 
 def process_video(video_bytes: bytes, max_frames: int = 20) -> dict:
@@ -305,7 +408,7 @@ def process_video(video_bytes: bytes, max_frames: int = 20) -> dict:
             break
         if frame_idx % step == 0:
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            result = process_image(rgb, label_hint=f"frame_{frame_idx}")
+            result = process_image(rgb)
             frame_results.append({
                 "frame": frame_idx,
                 "emotion": result["emotion"],
