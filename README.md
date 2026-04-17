@@ -126,15 +126,6 @@ When you are done working, deactivate the virtual environment with:
 ```bash
 deactivate
 ```
-
-Here is a **cleaner README section in Markdown** with the adjustments you requested:
-
-* Includes **creating `raw_data/` since it is in `.gitignore`**
-* **Does not include the script code**
-* Clearly states that the command must be run **from the project root directory**
-
-You can paste this directly into your `README.md`.
-
 ---
 
 ## Dataset Preparation
