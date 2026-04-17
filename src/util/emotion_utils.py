@@ -525,29 +525,27 @@ def fuse_predictions(
 # ---------------------------------------------------------------------------
 # Video → Audio extraction
 # ---------------------------------------------------------------------------
-def extract_audio_from_video(video_path: str, output_wav: str) -> bool:
-    """Extract audio track from video using ffmpeg or moviepy."""
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", video_path, "-vn",
-             "-acodec", "pcm_s16le", "-ar", "22050", "-ac", "1", output_wav],
-            capture_output=True, timeout=60,
-        )
-        return result.returncode == 0 and os.path.exists(output_wav)
-    except Exception:
-        pass
 
+from moviepy import VideoFileClip
+
+def extract_audio_from_video(video_path, wav_path):
     try:
-        from moviepy.editor import VideoFileClip
         clip = VideoFileClip(video_path)
-        if clip.audio:
-            clip.audio.write_audiofile(output_wav, fps=22050, nbytes=2,
-                                       codec="pcm_s16le", logger=None)
-            clip.close()
-            return os.path.exists(output_wav)
-        clip.close()
-    except Exception:
-        pass
 
-    return False
+        # if no audio stream
+        if clip.audio is None:
+            clip.close()
+            return False
+
+        clip.audio.write_audiofile(
+            wav_path,
+            codec="pcm_s16le",
+            logger=None  # suppress verbose logs (good for Streamlit)
+        )
+
+        clip.close()
+        return True
+
+    except Exception as e:
+        print("Audio extraction error:", e)
+        return False
